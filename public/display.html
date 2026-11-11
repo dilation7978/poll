@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Poll</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #111827; --muted: #6b7280; --track: #eef0f4; --accent: #2563eb;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --fg: #f3f4f6; --muted: #9aa1ad; --track: #232731; --accent: #60a5fa;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg); overflow: hidden;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+  }
+  /* Sized in vmin so it scales to whatever box PowerPoint's Web Viewer gives it. */
+  .stage { height: 100vh; display: grid; grid-template-columns: 1fr auto; gap: 5vmin; padding: 5vmin; }
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .question { font-size: 5.6vmin; font-weight: 700; line-height: 1.2; margin: 0 0 4vmin; }
+  .results { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; gap: 2.6vmin; }
+  .row { display: grid; grid-template-columns: 1fr auto; column-gap: 2vmin; row-gap: .8vmin; }
+  .label { font-size: 3.4vmin; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .value { font-size: 3.4vmin; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .track { grid-column: 1 / -1; height: 4.4vmin; background: var(--track); border-radius: 1vmin; overflow: hidden; }
+  .fill {
+    height: 100%; width: 0; border-radius: 1vmin; background: var(--accent); opacity: .55;
+    transition: width .6s cubic-bezier(.2, .8, .2, 1), opacity .3s;
+  }
+  .leading .fill { opacity: 1; }
+  .leading .value { color: var(--fg); font-weight: 700; }
+  .compact { gap: 1.4vmin; }
+  .compact .label, .compact .value { font-size: 2.5vmin; }
+  .compact .track { height: 2.6vmin; }
+  .results.text { flex-direction: row; flex-wrap: wrap; align-content: center; justify-content: center; gap: 1.2vmin 3.2vmin; }
+  .word { font-weight: 700; line-height: 1.1; transition: font-size .4s; }
+  .empty { color: var(--muted); font-size: 3.2vmin; text-align: center; width: 100%; }
+  .side { width: 32vmin; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2vmin; text-align: center; }
+  .no-qr .side { display: none; }
+  .no-qr .stage { grid-template-columns: 1fr; }
+  .qr { width: 100%; aspect-ratio: 1; background: #fff; padding: 1.4vmin; border-radius: 2vmin; box-shadow: 0 .4vmin 2.4vmin rgba(0, 0, 0, .12); }
+  .qr img { width: 100%; height: 100%; display: block; }
+  .scan { font-size: 2.8vmin; font-weight: 600; }
+  .url { font-size: 2.6vmin; font-weight: 700; color: var(--accent); word-break: break-all; }
+  .count { font-size: 2.6vmin; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pill {
+    font-size: 2.2vmin; font-weight: 600; padding: .6vmin 1.8vmin; border-radius: 99px;
+    background: var(--track); color: var(--muted);
+  }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="main">
+    <h1 class="question" id="question">Loading…</h1>
+    <div class="results" id="results"></div>
+  </div>
+  <aside class="side">
+    <div class="qr"><img id="qr" alt="QR code to join the poll"></div>
+    <div class="scan">Scan to answer</div>
+    <div class="url" id="join-url"></div>
+    <div class="count" id="count"></div>
+    <div class="pill" id="closed" hidden>Voting closed</div>
+  </aside>
+</div>
+<script>
+  const params = new URLSearchParams(location.search);
+  const pollId = decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] || '');
+  const key = params.get('key');
+  const root = document.documentElement;
+  if (params.get('theme') === 'dark') root.dataset.theme = 'dark';
+  const accent = params.get('accent');
+  if (accent && /^[0-9a-f]{6}$/i.test(accent)) root.style.setProperty('--accent', '#' + accent);
+  if (params.get('qr') === '0') document.body.classList.add('no-qr');
+
+  const $ = (id) => document.getElementById(id);
+  const PALETTE = ['var(--accent)', '#0ea5e9', '#8b5cf6', '#f59e0b', '#10b981', '#ef4444', '#ec4899'];
+
+  function div(cls, text) {
+    const d = document.createElement('div');
+    d.className = cls;
+    if (text != null) d.textContent = text;
+    return d;
+  }
+  // Stable hash so each word keeps its place and colour as the cloud grows.
+  function hash(s) {
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+    return h >>> 0;
+  }
+
+  let poll = null;
+  let res = null;
+  let rows = [];
+
+  function renderPoll() {
+    const box = $('results');
+    box.replaceChildren();
+    rows = [];
+    if (!poll) {
+      $('question').textContent = 'This poll was not found or has been deleted.';
+      return;
+    }
+    $('question').textContent = poll.question;
+    document.title = poll.question;
+    box.className = 'results ' + poll.type + (poll.type === 'choice' && poll.options.length > 5 ? ' compact' : '');
+    if (poll.type === 'choice') {
+      for (const label of poll.options) {
+        const row = div('row');
+        const v = div('value', '0');
+        const f = div('fill');
+        const t = div('track');
+        t.append(f);
+        row.append(div('label', label), v, t);
+        box.append(row);
+        rows.push({ row, v, f });
+      }
+    }
+    renderResults();
+  }
+
+  function renderResults() {
+    if (!poll || !res || res.type !== poll.type) return;
+    $('count').textContent = res.total === 1 ? '1 response' : `${res.total} responses`;
+
+    if (poll.type === 'choice') {
+      const max = Math.max(0, ...res.counts);
+      rows.forEach((r, i) => {
+        const n = res.counts[i] || 0;
+        const pct = res.total ? Math.round((n / res.total) * 100) : 0;
+        r.f.style.width = pct + '%';
+        r.v.textContent = `${n} · ${pct}%`;
+        r.row.classList.toggle('leading', n > 0 && n === max);
+      });
+      return;
+    }
+
+    const box = $('results');
+    box.replaceChildren();
+    if (!res.words.length) {
+      box.append(div('empty', 'Responses will appear here'));
+      return;
+    }
+    const top = res.words[0].count;
+    const words = res.words.slice().sort((a, b) => hash(a.text.toLowerCase()) - hash(b.text.toLowerCase()));
+    for (const w of words) {
+      const s = document.createElement('span');
+      s.className = 'word';
+      s.textContent = w.text;
+      const weight = top > 1 ? (w.count - 1) / (top - 1) : 0;
+      s.style.fontSize = (2.8 + Math.sqrt(weight) * 6.4).toFixed(2) + 'vmin';
+      s.style.color = PALETTE[hash(w.text.toLowerCase()) % PALETTE.length];
+      box.append(s);
+    }
+  }
+
+  // A slide link carries the admin key: showing the slide makes this question the live one.
+  if (key) {
+    fetch(`/api/admin/polls/${encodeURIComponent(pollId)}/activate`, { method: 'POST', headers: { 'x-admin-key': key } })
+      .catch(() => {});
+  }
+
+  fetch('/api/info').then((r) => r.json()).then((info) => {
+    $('join-url').textContent = info.joinUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+  }).catch(() => {});
+  $('qr').src = '/api/qr.svg';
+
+  let opened = false;
+  function connect() {
+    const es = new EventSource(`/api/polls/${encodeURIComponent(pollId)}/stream`);
+    es.addEventListener('poll', (e) => { poll = JSON.parse(e.data); renderPoll(); });
+    es.addEventListener('results', (e) => { res = JSON.parse(e.data); renderResults(); });
+    es.addEventListener('status', (e) => { $('closed').hidden = JSON.parse(e.data).active; });
+    es.onopen = () => { opened = true; };
+    es.onerror = () => {
+      if (es.readyState !== EventSource.CLOSED) return; // browser is already retrying
+      if (!opened) $('question').textContent = 'Poll not found, or the poll server can’t be reached.';
+      setTimeout(connect, 3000);
+    };
+  }
+  connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Poll Admin</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --fg: #111827; --muted: #6b7280; --border: #e2e5ea;
+    --accent: #2563eb; --accent-fg: #ffffff; --live: #16a34a; --danger: #b91c1c; --soft: #eef0f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #181b22; --fg: #f3f4f6; --muted: #9aa1ad; --border: #2a2f3a;
+      --accent: #3b82f6; --live: #22c55e; --danger: #f87171; --soft: #232731;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 17px; margin: 0 0 12px; }
+  a { color: var(--accent); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+  label { display: block; font-weight: 600; margin-bottom: 12px; }
+  input[type=text], input[type=password], textarea {
+    display: block; width: 100%; margin-top: 6px; font: inherit; padding: 10px 12px;
+    border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--fg);
+  }
+  .types { display: flex; flex-wrap: wrap; gap: 18px; margin-bottom: 12px; }
+  .types label { display: flex; align-items: center; gap: 6px; font-weight: 500; margin: 0; }
+  button {
+    font: inherit; font-size: 14px; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--fg);
+  }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+  button.go { background: var(--live); border-color: var(--live); color: #fff; font-weight: 600; }
+  button.danger { color: var(--danger); }
+  .actions { display: flex; gap: 8px; }
+  .err { color: var(--danger); font-weight: 600; min-height: 1.2em; margin: 10px 0 0; }
+  .list-head { display: flex; align-items: center; justify-content: space-between; margin: 28px 0 12px; }
+  .list-head h2 { margin: 0; }
+  .polls { display: grid; gap: 12px; }
+  .poll.live { border-color: var(--live); box-shadow: 0 0 0 1px var(--live); }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .badge { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--soft); color: var(--muted); }
+  .badge.live { background: var(--live); color: #fff; }
+  .q { font-size: 17px; font-weight: 600; margin-bottom: 4px; }
+  .opts { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 6px; }
+  .empty { color: var(--muted); text-align: center; padding: 28px; }
+  .toast {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 10px 16px;
+    background: var(--fg); color: var(--bg); border-radius: 8px; font-weight: 600; opacity: 0; transition: opacity .2s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Live Poll admin</h1>
+    <div id="join-wrap" hidden>Audience link: <a id="join" target="_blank" rel="noopener"></a></div>
+  </header>
+
+  <section id="login" class="card" hidden>
+    <form id="login-form">
+      <label>Admin key <input type="password" id="key-input" autocomplete="current-password" required></label>
+      <button class="primary">Sign in</button>
+      <p class="err" id="login-err"></p>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <form id="editor" class="card">
+      <h2 id="editor-title">New question</h2>
+      <label>Question <input type="text" id="q" maxlength="300" required></label>
+      <div class="types">
+        <label><input type="radio" name="type" value="choice" checked> Multiple choice</label>
+        <label><input type="radio" name="type" value="text"> Open text (word cloud)</label>
+      </div>
+      <label id="opts-wrap">Options, one per line (2 to 10)<textarea id="opts" rows="5"></textarea></label>
+      <div class="actions">
+        <button class="primary" id="save">Add question</button>
+        <button type="button" id="cancel" hidden>Cancel</button>
+      </div>
+      <p class="err" id="editor-err"></p>
+    </form>
+
+    <div class="list-head">
+      <h2>Questions</h2>
+      <button id="stop-all">Stop all voting</button>
+    </div>
+    <div class="polls" id="list"></div>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let key = '';
+  try { key = localStorage.getItem('poll-admin-key') || ''; } catch {}
+  let editingId = null;
+  let polls = [];
+  let lastSig = '';
+
+  async function api(method, path, body) {
+    const headers = { 'x-admin-key': key };
+    if (body) headers['Content-Type'] = 'application/json';
+    const r = await fetch('/api/admin' + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    const data = await r.json().catch(() => ({}));
+    if (r.status === 401) { signOut(); throw new Error('Wrong admin key'); }
+    if (!r.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  }
+
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); toast('Link copied'); return; } catch {}
+    // Clipboard API needs HTTPS; fall back for plain-http LAN use.
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    ta.remove();
+    if (ok) toast('Link copied');
+    else prompt('Copy this link:', text);
+  }
+
+  function signOut() {
+    key = '';
+    try { localStorage.removeItem('poll-admin-key'); } catch {}
+    $('app').hidden = true;
+    $('join-wrap').hidden = true;
+    $('login').hidden = false;
+  }
+
+  async function refresh() {
+    if (!key) return;
+    const data = await api('GET', '/polls');
+    $('login').hidden = true;
+    $('app').hidden = false;
+    $('join-wrap').hidden = false;
+    $('join').href = data.joinUrl;
+    $('join').textContent = data.joinUrl;
+    const sig = JSON.stringify(data.polls);
+    if (sig === lastSig) return;
+    lastSig = sig;
+    polls = data.polls;
+    renderList();
+  }
+
+  function btn(text, cls, onclick) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = text;
+    if (cls) b.className = cls;
+    b.onclick = async () => {
+      try { await onclick(); await refresh(); } catch (err) { toast(err.message); }
+    };
+    return b;
+  }
+
+  function renderList() {
+    const list = $('list');
+    list.replaceChildren();
+    if (!polls.length) {
+      const e = document.createElement('div');
+      e.className = 'card empty';
+      e.textContent = 'No questions yet. Add one above.';
+      list.append(e);
+      return;
+    }
+    for (const p of polls) {
+      const card = document.createElement('div');
+      card.className = 'card poll' + (p.active ? ' live' : '');
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const type = document.createElement('span');
+      type.className = 'badge';
+      type.textContent = p.type === 'choice' ? 'Multiple choice' : 'Open text';
+      meta.append(type);
+      if (p.active) {
+        const live = document.createElement('span');
+        live.className = 'badge live';
+        live.textContent = 'LIVE';
+        meta.append(live);
+      }
+      meta.append(`${p.responses} response${p.responses === 1 ? '' : 's'}`);
+
+      const q = document.createElement('div');
+      q.className = 'q';
+      q.textContent = p.question;
+      card.append(meta, q);
+      if (p.type === 'choice') {
+        const o = document.createElement('div');
+        o.className = 'opts';
+        o.textContent = p.options.join('  ·  ');
+        card.append(o);
+      } else {
+        q.style.marginBottom = '12px';
+      }
+
+      const slideUrl = `${location.origin}/display/${p.id}?key=${encodeURIComponent(key)}`;
+      const viewUrl = `${location.origin}/display/${p.id}`;
+      const btns = document.createElement('div');
+      btns.className = 'btns';
+      btns.append(
+        p.active
+          ? btn('Stop voting', '', () => api('POST', '/deactivate'))
+          : btn('Make live', 'go', () => api('POST', `/polls/${p.id}/activate`)),
+        btn('Present', '', () => window.open(slideUrl, '_blank')),
+        btn('Copy slide link', '', () => copy(slideUrl)),
+        btn('Copy view-only link', '', () => copy(viewUrl)),
+        btn('Edit', '', () => startEdit(p)),
+        btn('Reset results', '', () => confirm('Clear all responses to this question?') && api('POST', `/polls/${p.id}/reset`)),
+        btn('Delete', 'danger', () => confirm('Delete this question and its responses?') && api('DELETE', `/polls/${p.id}`)),
+      );
+      card.append(btns);
+      list.append(card);
+    }
+  }
+
+  function currentType() {
+    return document.querySelector('input[name=type]:checked').value;
+  }
+  function syncType() {
+    $('opts-wrap').hidden = currentType() !== 'choice';
+  }
+
+  function startEdit(p) {
+    editingId = p.id;
+    $('editor-title').textContent = 'Edit question';
+    $('save').textContent = 'Save changes';
+    $('cancel').hidden = false;
+    $('q').value = p.question;
+    document.querySelector(`input[name=type][value=${p.type}]`).checked = true;
+    $('opts').value = p.options.join('\n');
+    syncType();
+    $('editor').scrollIntoView({ behavior: 'smooth' });
+    $('q').focus();
+  }
+
+  function resetEditor() {
+    editingId = null;
+    $('editor').reset();
+    $('editor-title').textContent = 'New question';
+    $('save').textContent = 'Add question';
+    $('cancel').hidden = true;
+    $('editor-err').textContent = '';
+    syncType();
+  }
+
+  document.querySelectorAll('input[name=type]').forEach((r) => r.addEventListener('change', syncType));
+  $('cancel').onclick = resetEditor;
+
+  $('editor').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const body = { question: $('q').value, type: currentType(), options: $('opts').value.split('\n') };
+    if (editingId && body.type !== polls.find((p) => p.id === editingId)?.type &&
+        !confirm('Changing the question type clears its existing responses. Continue?')) return;
+    try {
+      if (editingId) await api('PUT', `/polls/${editingId}`, body);
+      else await api('POST', '/polls', body);
+      resetEditor();
+      await refresh();
+    } catch (err) {
+      $('editor-err').textContent = err.message;
+    }
+  });
+
+  $('stop-all').onclick = async () => {
+    try { await api('POST', '/deactivate'); await refresh(); } catch (err) { toast(err.message); }
+  };
+
+  $('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    key = $('key-input').value;
+    try {
+      await refresh();
+      try { localStorage.setItem('poll-admin-key', key); } catch {}
+      $('login-err').textContent = '';
+    } catch (err) {
+      $('login-err').textContent = err.message;
+      $('login').hidden = false;
+    }
+  });
+
+  syncType();
+  if (key) refresh().catch(() => signOut());
+  else signOut();
+  setInterval(() => { if (key) refresh().catch(() => {}); }, 3000);
+</script>
+</body>
+</html>

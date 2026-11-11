@@ -1,0 +1,16 @@
+services:
+  poll:
+    build: .
+    container_name: live-poll
+    restart: unless-stopped
+    ports:
+      - "3300:3000"
+    environment:
+      # Password for the /admin page. CHANGE THIS.
+      - ADMIN_KEY=changeme
+      # The address phones should open (used for the QR code), e.g.
+      # https://poll.example.com  or  http://192.168.1.50:3300
+      # Leave empty to use whatever address the presenter screen was opened with.
+      - PUBLIC_URL=
+    volumes:
+      - ./data:/app/data
